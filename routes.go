@@ -7,6 +7,7 @@ import (
 	"github.com/jkittell/data/database"
 	"go.mongodb.org/mongo-driver/bson"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,8 +20,8 @@ type FileHandler struct {
 	files database.MongoDB[FileEntry]
 }
 
-func NewFileHandler(env string) FileHandler {
-	db, err := database.NewMongoDB[FileEntry](env, "files")
+func NewFileHandler() FileHandler {
+	db, err := database.NewMongoDB[FileEntry]("files")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -32,55 +33,58 @@ func (h FileHandler) Get(c *gin.Context) {
 	var file FileEntry
 	val, err := uuid.Parse(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
 	file, err = h.files.FindByID(c, val)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": err.Error(), "id": val})
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error(), "id": val})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "file": file})
+	c.JSON(http.StatusOK, file)
 }
 
 func (h FileHandler) List(c *gin.Context) {
 	files, err := h.files.All(c, nil)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "files": files})
+	c.JSON(http.StatusOK, files)
+}
+
+type Form struct {
+	File *multipart.FileHeader `form:"file" binding:"required"`
 }
 
 func (h FileHandler) Upload(c *gin.Context) {
-	file, err := c.FormFile("file")
+	var form Form
+	err := c.ShouldBind(&form)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusBadRequest, err)
 		return
 	}
 
-	// use uuid folder to prevent file name collisions
 	id := uuid.New()
-	filePath := filepath.Join(volume, id.String(), file.Filename)
-
-	if err = c.SaveUploadedFile(file, filePath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+	filePath := filepath.Join(volume, id.String(), form.File.Filename)
+	if err = c.SaveUploadedFile(form.File, filePath); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	fileEntry := FileEntry{
 		Id:        id,
-		Name:      file.Filename,
-		Size:      file.Size,
+		Name:      form.File.Filename,
+		Size:      form.File.Size,
 		CreatedAt: time.Now(),
 	}
 	if err = h.files.Insert(c, fileEntry); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// Return a success message and the file metadata
-	c.JSON(http.StatusOK, gin.H{"success": true, "file": fileEntry})
+	c.JSON(http.StatusOK, fileEntry)
 }
 
 func (h FileHandler) Download(c *gin.Context) {
@@ -88,12 +92,12 @@ func (h FileHandler) Download(c *gin.Context) {
 	var file FileEntry
 	val, err := uuid.Parse(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
 	file, err = h.files.FindByID(c, val)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": err.Error(), "id": val})
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error(), "id": val})
 		return
 	}
 
@@ -101,7 +105,7 @@ func (h FileHandler) Download(c *gin.Context) {
 
 	fileData, err := os.Open(filePath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	defer fileData.Close()
@@ -109,13 +113,13 @@ func (h FileHandler) Download(c *gin.Context) {
 	fileHeader := make([]byte, 512)
 	_, err = fileData.Read(fileHeader)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	fileContentType := http.DetectContentType(fileHeader)
 	fileInfo, err := fileData.Stat()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.Header("Content-Description", "File Transfer")
@@ -132,13 +136,13 @@ func (h FileHandler) Delete(c *gin.Context) {
 
 	val, err := uuid.Parse(id)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
 
 	file, err = h.files.FindByID(c, val)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"success": false, "error": err.Error(), "id": val})
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error(), "id": val})
 		return
 	}
 
@@ -146,17 +150,17 @@ func (h FileHandler) Delete(c *gin.Context) {
 
 	err = os.RemoveAll(filePath)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	err = h.files.Delete(c, bson.D{{Key: "_id", Value: val}}, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"success": true, "file": file,
+		"file": file,
 	})
 }
